@@ -102,6 +102,8 @@ function getInputs(
 						'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
 						'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 						'@n8n/n8n-nodes-langchain.lmChatXAiGrok',
+						'@n8n/n8n-nodes-langchain.lmChatNvidiaTriton',
+
 					],
 				},
 			},
@@ -133,6 +135,7 @@ function getInputs(
 						'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
 						'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 						'@n8n/n8n-nodes-langchain.lmChatXAiGrok',
+						'@n8n/n8n-nodes-langchain.lmChatNvidiaTriton',
 					],
 				},
 			},

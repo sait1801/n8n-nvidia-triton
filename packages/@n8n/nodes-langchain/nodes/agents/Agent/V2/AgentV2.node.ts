@@ -76,7 +76,6 @@ function getInputs(hasOutputParser?: boolean): Array<NodeConnectionType | INodeI
 					'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
 					'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 					'@n8n/n8n-nodes-langchain.lmChatXAiGrok',
-					// Add the new NVIDIA Triton model here
 					'@n8n/n8n-nodes-langchain.lmChatNvidiaTriton',
 				],
 			},

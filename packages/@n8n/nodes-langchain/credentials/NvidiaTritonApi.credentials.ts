@@ -45,7 +45,7 @@ export class NvidiaTritonApi implements ICredentialType {
 	test: ICredentialTestRequest = { // [[5]] (structure of test)
 		request: {
 			// Use the tritonServerUrl from the credentials as the base URL for the test request.
-			baseURL: '={{$credentials.tritonServerUrl}}',
+			baseURL: 'http://localhost:8000',
 			// The /v2/health/live endpoint is a standard Triton health check,
 			// usually not requiring authentication.
 			url: '/v2/health/live',
