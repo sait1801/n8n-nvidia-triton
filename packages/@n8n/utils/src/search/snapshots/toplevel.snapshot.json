@@ -11811,7 +11811,7 @@
 			"description": "Language Model for NVIDIA Triton Inference Server",
 			"name": "@n8n/n8n-nodes-langchain.lmChatNvidiaTriton",
 			"group": ["transform"],
-			"iconUrl": "icons/@n8n/n8n-nodes-langchain/dist/nodes/llms/LmChatNvidiaTriton/nvidiaTriton.svg",
+			"iconUrl": "icons/@n8n/n8n-nodes-langchain/dist/nodes/llms/LmChatNvidiaTriton/nvidia-7.svg",
 			"outputs": ["ai_languageModel"],
 			"codex": {
 				"categories": ["AI"],
