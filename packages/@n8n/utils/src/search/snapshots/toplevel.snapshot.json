@@ -11800,6 +11800,42 @@
 		"type": "node"
 	},
 	{
+		"uuid": "b7e2c1d2-2f3a-4e6b-9c8a-123456789abc",
+		"key": "@n8n/n8n-nodes-langchain.lmChatNvidiaTriton",
+		"subcategory": "*",
+		"properties": {
+			"displayName": "NVIDIA Triton Chat Model",
+			"defaults": {
+				"name": "NVIDIA Triton Chat Model"
+			},
+			"description": "Language Model for NVIDIA Triton Inference Server",
+			"name": "@n8n/n8n-nodes-langchain.lmChatNvidiaTriton",
+			"group": ["transform"],
+			"iconUrl": "icons/@n8n/n8n-nodes-langchain/dist/nodes/llms/LmChatNvidiaTriton/nvidia-7.svg",
+			"outputs": ["ai_languageModel"],
+			"codex": {
+				"categories": ["AI"],
+				"subcategories": {
+					"AI": ["Language Models", "Root Nodes"],
+					"Language Models": ["Chat Models (Recommended)"]
+				},
+				"resources": {
+					"primaryDocumentation": [
+						{
+							"url": "https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/index.html"
+						}
+					],
+					"credentialDocumentation": [
+						{
+							"url": "https://docs.n8n.io/integrations/builtin/credentials/nvidiaTritonApi/"
+						}
+					]
+				}
+			}
+		},
+		"type": "node"
+	},	
+	{
 		"uuid": "c006bd5f-79d1-4f44-bad1-d27b6002f9c9",
 		"key": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
 		"subcategory": "*",

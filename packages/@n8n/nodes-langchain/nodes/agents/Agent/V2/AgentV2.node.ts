@@ -62,7 +62,7 @@ function getInputs(hasOutputParser?: boolean): Array<NodeConnectionType | INodeI
 	let specialInputs: SpecialInput[] = [
 		{
 			type: 'ai_languageModel',
-			filter: {
+			filter: { // [[5]] (concept of node type filtering)
 				nodes: [
 					'@n8n/n8n-nodes-langchain.lmChatAnthropic',
 					'@n8n/n8n-nodes-langchain.lmChatAzureOpenAi',
@@ -76,6 +76,7 @@ function getInputs(hasOutputParser?: boolean): Array<NodeConnectionType | INodeI
 					'@n8n/n8n-nodes-langchain.lmChatDeepSeek',
 					'@n8n/n8n-nodes-langchain.lmChatOpenRouter',
 					'@n8n/n8n-nodes-langchain.lmChatXAiGrok',
+					'@n8n/n8n-nodes-langchain.lmChatNvidiaTriton',
 				],
 			},
 		},
@@ -114,8 +115,8 @@ export class AgentV2 implements INodeType {
 					return getInputs(hasOutputParser)
 				})($parameter.hasOutputParser === undefined || $parameter.hasOutputParser === true)
 			}}`,
-			outputs: [NodeConnectionTypes.Main],
-			properties: [
+			outputs: [NodeConnectionTypes.Main], // [[5]] (concept of node outputs)
+			properties: [ // [[5]] (concept of node properties)
 				{
 					displayName:
 						'Tip: Get a feel for agents with our quick <a href="https://docs.n8n.io/advanced-ai/intro-tutorial/" target="_blank">tutorial</a> or see an <a href="/templates/1954" target="_blank">example</a> of how this node works',
