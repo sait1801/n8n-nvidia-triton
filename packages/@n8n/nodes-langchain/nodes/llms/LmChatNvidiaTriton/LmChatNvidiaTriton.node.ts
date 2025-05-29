@@ -227,7 +227,7 @@ export class LmChatNvidiaTriton implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Nvidia Triton Model (Infer)',
 		name: 'lmChatNvidiaTriton', // Ensure this matches the name used in any previous fixes
-		icon: 'file:nvidiaTriton.svg',
+		icon: 'file:nvidia_triton.svg',
 		group: ['transform'],
 		version: 1.2, // Incrementing version due to significant workaround
 		description: 'Uses Nvidia Triton Inference Server /infer endpoint (with AI Agent workarounds)',
