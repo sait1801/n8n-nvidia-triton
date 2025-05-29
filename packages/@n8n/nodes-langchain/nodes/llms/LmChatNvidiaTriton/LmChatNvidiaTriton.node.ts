@@ -27,7 +27,7 @@ import { type CallbackManagerForLLMRun, type Callbacks } from '@langchain/core/c
 import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs
 
 // --- Custom ChatNvidiaTriton LangChain Model (for /infer endpoint) ---
-interface ChatNvidiaTritonInferParams extends BaseChatModelParams {
+interface ChatNvidiaTritonParams extends BaseChatModelParams {
 	tritonBaseUrl: string;
 	modelName: string;
 	inputFieldName: string;
@@ -40,7 +40,7 @@ interface ChatNvidiaTritonInferParams extends BaseChatModelParams {
 	onFailedAttempt?: (error: Error) => void;
 }
 
-class ChatNvidiaTritonInfer extends BaseChatModel {
+class ChatNvidiaTriton extends BaseChatModel {
 	private tritonBaseUrl: string;
 	private modelName: string;
 	private inputFieldName: string;
@@ -49,7 +49,7 @@ class ChatNvidiaTritonInfer extends BaseChatModel {
 	private n8nHttpRequest: IExecuteFunctions['helpers']['httpRequest'];
 	private onFailedAttemptHandler?: (error: Error) => void;
 
-	constructor(fields: ChatNvidiaTritonInferParams) {
+	constructor(fields: ChatNvidiaTritonParams) {
 		super(fields);
 		this.tritonBaseUrl = fields.tritonBaseUrl.replace(/\/+$/, '');
 		this.modelName = fields.modelName;
@@ -78,7 +78,7 @@ class ChatNvidiaTritonInfer extends BaseChatModel {
 			} else {
 				promptText = JSON.stringify(lastMessage.content);
 				console.warn(
-					`[ChatNvidiaTritonInfer] Last message content was not a string, used JSON.stringify. Input: ${promptText}`,
+					`[ChatNvidiaTriton] Last message content was not a string, used JSON.stringify. Input: ${promptText}`,
 				);
 			}
 		}
@@ -203,7 +203,7 @@ class ChatNvidiaTritonInfer extends BaseChatModel {
 export class LmChatNvidiaTriton implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Nvidia Triton Model (Infer)',
-		name: 'lmChatNvidiaTritonInfer', // Updated name
+		name: 'lmChatNvidiaTriton', // Updated name
 		icon: 'file:nvidiaTriton.svg',
 		group: ['transform'],
 		version: 1, // Consider incrementing if this is a major change from a previous version
@@ -296,7 +296,7 @@ export class LmChatNvidiaTriton implements INodeType {
 
 		const executeFunctionsThis = this as unknown as IExecuteFunctions;
 
-		const model = new ChatNvidiaTritonInfer({
+		const model = new ChatNvidiaTriton({
 			tritonBaseUrl,
 			modelName,
 			inputFieldName,
