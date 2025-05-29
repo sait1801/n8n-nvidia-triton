@@ -16,7 +16,7 @@ import { getConnectionHintNoticeField } from '@utils/sharedFields';
 import { makeN8nLlmFailedAttemptHandler } from '../n8nLlmFailedAttemptHandler'; // Adjust path as needed
 import { N8nLlmTracing } from '../N8nLlmTracing'; // Adjust path as needed
 
-// LangChain Core Imports for the custom ChatNvidiaTriton class
+// LangChain Core Imports
 import {
 	BaseChatModel,
 	type BaseChatModelParams,
@@ -24,76 +24,98 @@ import {
 import { AIMessage, BaseMessage } from '@langchain/core/messages';
 import { type ChatResult } from '@langchain/core/outputs';
 import { type CallbackManagerForLLMRun, type Callbacks } from '@langchain/core/callbacks/manager';
-import { type Agent } from 'undici'; // For httpAgent type (though n8n's httpRequest handles agent internally)
+import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs
 
-// --- Custom ChatNvidiaTriton LangChain Model ---
-interface ChatNvidiaTritonParams extends BaseChatModelParams {
+// --- Custom ChatNvidiaTriton LangChain Model (for /infer endpoint) ---
+interface ChatNvidiaTritonInferParams extends BaseChatModelParams {
 	tritonBaseUrl: string;
 	modelName: string;
-	temperature?: number;
-	stream?: boolean;
-	// This helper is crucial for making HTTP requests via n8n's infrastructure
+	inputFieldName: string;
+	outputFieldName: string;
+	temperature?: number; // Will be passed in 'parameters' if Triton model supports it via /infer
+	// Note: The /infer endpoint is more generic. Passing arbitrary parameters like temperature
+	// depends on the specific model's configuration in Triton and if it accepts them via
+	// the "parameters" field in the request payload. The provided cURL doesn't show it.
 	n8nHttpRequest: IExecuteFunctions['helpers']['httpRequest'];
 	onFailedAttempt?: (error: Error) => void;
 }
 
-class ChatNvidiaTriton extends BaseChatModel {
+class ChatNvidiaTritonInfer extends BaseChatModel {
 	private tritonBaseUrl: string;
 	private modelName: string;
-	private temperature: number;
-	private streamOutput: boolean;
+	private inputFieldName: string;
+	private outputFieldName: string;
+	private temperature?: number;
 	private n8nHttpRequest: IExecuteFunctions['helpers']['httpRequest'];
 	private onFailedAttemptHandler?: (error: Error) => void;
 
-	constructor(fields: ChatNvidiaTritonParams) {
+	constructor(fields: ChatNvidiaTritonInferParams) {
 		super(fields);
-		this.tritonBaseUrl = fields.tritonBaseUrl.replace(/\/+$/, ''); // Ensure no trailing slash
+		this.tritonBaseUrl = fields.tritonBaseUrl.replace(/\/+$/, '');
 		this.modelName = fields.modelName;
-		this.temperature = fields.temperature ?? 0.0;
-		this.streamOutput = fields.stream ?? false;
+		this.inputFieldName = fields.inputFieldName;
+		this.outputFieldName = fields.outputFieldName;
+		this.temperature = fields.temperature; // Store if provided
 		this.n8nHttpRequest = fields.n8nHttpRequest;
 		this.onFailedAttemptHandler = fields.onFailedAttempt;
-		this.callbacks = fields.callbacks; // Pass callbacks to BaseChatModel
+		this.callbacks = fields.callbacks;
 	}
 
 	_llmType(): string {
-		return 'chat_nvidia_triton_generate_simplified';
+		return 'chat_nvidia_triton_infer';
 	}
 
 	async _generate(
 		messages: BaseMessage[],
-		options: this['ParsedCallOptions'], // Contains stop sequences, etc.
+		options: this['ParsedCallOptions'],
 		runManager?: CallbackManagerForLLMRun,
 	): Promise<ChatResult> {
-		// For Triton's /generate, we typically need a single text input.
-		// We'll use the content of the last message.
-		let promptText = ' '; // Default to a space if no messages or content
+		let promptText = ' ';
 		if (messages.length > 0) {
 			const lastMessage = messages[messages.length - 1];
 			if (typeof lastMessage.content === 'string') {
 				promptText = lastMessage.content;
 			} else {
-				// If content is not a simple string (e.g., list of content blocks),
-				// try to serialize it or extract relevant text.
-				// For simplicity here, we'll just stringify.
 				promptText = JSON.stringify(lastMessage.content);
 				console.warn(
-					`[ChatNvidiaTriton] Last message content was not a string, used JSON.stringify. Input: ${promptText}`,
+					`[ChatNvidiaTritonInfer] Last message content was not a string, used JSON.stringify. Input: ${promptText}`,
 				);
 			}
 		}
 
+		const requestId = `n8n_${uuidv4()}`; // Generate a unique ID for the request
+
 		const payload: JsonObject = {
-			text_input: promptText,
-			parameters: {
-				stream: this.streamOutput,
-				temperature: this.temperature,
-				// You could add other parameters here if your Triton model supports them
-				// e.g., max_tokens, stop_sequences (options.stop might be relevant)
-			},
+			id: requestId,
+			inputs: [
+				{
+					name: this.inputFieldName,
+					shape: [1], // Assuming single string input
+					datatype: 'BYTES', // Standard for text input with vLLM backend
+					data: [promptText],
+				},
+			],
+			outputs: [
+				{
+					name: this.outputFieldName,
+					// parameters: { "binary_data_output": false } // Some backends might need this for string output
+				},
+			],
 		};
 
-		const endpoint = `${this.tritonBaseUrl}/v2/models/${this.modelName}/generate`;
+		// Add optional parameters if the model supports them (e.g., temperature)
+		// This is model-specific for the /infer endpoint.
+		// The cURL example did not include this, but it's a common LLM parameter.
+		// Check your Triton model's documentation for supported parameters.
+		if (this.temperature !== undefined) {
+			payload.parameters = {
+				// This 'parameters' object is at the root of the payload
+				temperature: this.temperature,
+				// "stream": false, // if your model supports a stream parameter here
+			};
+		}
+
+		const endpoint = `${this.tritonBaseUrl}/v2/models/${this.modelName}/infer`;
 		let responseData: JsonObject;
 
 		try {
@@ -102,7 +124,7 @@ class ChatNvidiaTriton extends BaseChatModel {
 				body: payload,
 				headers: { 'Content-Type': 'application/json' },
 				url: endpoint,
-				json: true, // Expect JSON response
+				json: true,
 			})) as JsonObject;
 		} catch (error) {
 			const typedError = error as NodeApiError | Error;
@@ -118,23 +140,46 @@ class ChatNvidiaTriton extends BaseChatModel {
 				(typedError as NodeApiError).httpCode ||
 				500;
 			const errorToThrow = new Error(`Nvidia Triton API Error (Status ${status}): ${errorMessage}`);
-			(errorToThrow as any).status = status; // Langchain might check for status
+			(errorToThrow as any).status = status;
 			throw errorToThrow;
 		}
 
-		const textOutput = responseData.text_output as string | undefined;
-
-		if (typeof textOutput !== 'string') {
+		if (!responseData.outputs || !Array.isArray(responseData.outputs)) {
 			throw new Error(
-				`Invalid response structure from Triton: 'text_output' not found or not a string. Response: ${JSON.stringify(
+				`Invalid response structure from Triton: 'outputs' array not found. Response: ${JSON.stringify(
 					responseData,
 				)}`,
 			);
 		}
 
-		// If streaming were fully handled here (it's not for /generate in this simple model),
-		// runManager.handleLLMNewToken would be called multiple times.
-		// For a non-streaming /generate endpoint, we call it once with the full output.
+		const outputObject = responseData.outputs.find((o: any) => o.name === this.outputFieldName);
+
+		if (!outputObject) {
+			throw new Error(
+				`Output field '${this.outputFieldName}' not found in Triton response. Available outputs: ${responseData.outputs
+					.map((o: any) => o.name)
+					.join(', ')}. Response: ${JSON.stringify(responseData)}`,
+			);
+		}
+
+		// Assuming the data is in outputObject.data[0] and is a string
+		// For BYTES datatype, Triton often returns an array of strings.
+		if (!outputObject.data || !Array.isArray(outputObject.data) || outputObject.data.length === 0) {
+			throw new Error(
+				`Data for output field '${this.outputFieldName}' is missing or not an array in Triton response. Output object: ${JSON.stringify(outputObject)}`,
+			);
+		}
+
+		const textOutput = outputObject.data[0] as string;
+
+		if (typeof textOutput !== 'string') {
+			throw new Error(
+				`Expected string data for output field '${
+					this.outputFieldName
+				}', but received type ${typeof textOutput}. Output data: ${JSON.stringify(outputObject.data)}`,
+			);
+		}
+
 		await runManager?.handleLLMNewToken(textOutput);
 
 		return {
@@ -147,6 +192,7 @@ class ChatNvidiaTriton extends BaseChatModel {
 			llmOutput: {
 				model_name: responseData.model_name || this.modelName,
 				model_version: responseData.model_version,
+				id: responseData.id,
 				raw_response: responseData,
 			},
 		};
@@ -156,14 +202,14 @@ class ChatNvidiaTriton extends BaseChatModel {
 
 export class LmChatNvidiaTriton implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Nvidia Triton Model (Simple)',
-		name: 'lmChatNvidiaTriton', // Changed name slightly to avoid conflict if you have the other one
-		icon: 'file:nvidiaTriton.svg', // You'll need to create/add this SVG icon
+		displayName: 'Nvidia Triton Model (Infer)',
+		name: 'lmChatNvidiaTritonInfer', // Updated name
+		icon: 'file:nvidiaTriton.svg',
 		group: ['transform'],
-		version: 1,
-		description: 'Uses Nvidia Triton Inference Server /generate endpoint',
+		version: 1, // Consider incrementing if this is a major change from a previous version
+		description: 'Uses Nvidia Triton Inference Server /infer endpoint',
 		defaults: {
-			name: 'Nvidia Triton',
+			name: 'Nvidia Triton (Infer)',
 		},
 		codex: {
 			categories: ['AI'],
@@ -180,9 +226,8 @@ export class LmChatNvidiaTriton implements INodeType {
 		outputNames: ['Model'],
 		credentials: [
 			{
-				name: 'nvidiaTritonApi', // This credential type needs to be defined in n8n
+				name: 'nvidiaTritonApi',
 				required: true,
-				// It should provide a 'baseUrl' field, e.g., "http://localhost:8000"
 			},
 		],
 		properties: [
@@ -192,43 +237,46 @@ export class LmChatNvidiaTriton implements INodeType {
 				name: 'modelName',
 				type: 'string',
 				required: true,
-				default: 'llama2vllm', // From your cURL example
+				default: 'vllm_qwen_qwq', // From your new cURL
 				description:
-					'The name of the model deployed on Triton (e.g., "llama2vllm" for /v2/models/llama2vllm/generate)',
+					'The name of the model deployed on Triton (e.g., "vllm_qwen_qwq" for /v2/models/vllm_qwen_qwq/infer)',
+			},
+			{
+				displayName: 'Input Field Name',
+				name: 'inputFieldName',
+				type: 'string',
+				required: true,
+				default: 'INPUT', // From your new cURL
+				description: 'The "name" of the input tensor in the Triton request payload.',
+			},
+			{
+				displayName: 'Output Field Name',
+				name: 'outputFieldName',
+				type: 'string',
+				required: true,
+				default: 'OUTPUT', // From your new cURL
+				description: 'The "name" of the output tensor to retrieve from the Triton response.',
 			},
 			{
 				displayName: 'Options',
 				name: 'options',
 				placeholder: 'Add Option',
-				description: 'Parameters for the /generate endpoint',
+				description:
+					'Optional parameters for the /infer endpoint. Support depends on the Triton model.',
 				type: 'collection',
 				default: {},
 				options: [
 					{
 						displayName: 'Temperature',
 						name: 'temperature',
-						default: 0.0, // From your cURL
+						default: 0.7, // A common default, but your cURL didn't specify it for /infer
 						typeOptions: { maxValue: 2.0, minValue: 0.0, numberPrecision: 2 },
-						description: 'Controls randomness. 0.0 is deterministic.',
+						description:
+							'Controls randomness. Note: Support for this parameter via /infer depends on the specific Triton model configuration.',
 						type: 'number',
 					},
-					{
-						displayName: 'Stream (Parameter)',
-						name: 'stream',
-						default: false, // From your cURL
-						description:
-							'Sets the "stream" parameter for Triton. Note: This node provides the full response, not chunked streaming output to n8n.',
-						type: 'boolean',
-					},
-					// Add other parameters like 'max_tokens' if your Triton model's
-					// /generate endpoint supports them within its "parameters" object.
-					// {
-					// displayName: 'Max Tokens',
-					// name: 'max_tokens', // Ensure this matches Triton's expected parameter name
-					// type: 'number',
-					// default: 1024,
-					// description: 'Maximum number of tokens to generate.',
-					// },
+					// Add other parameters if your model supports them via the root "parameters" object
+					// in the /infer request.
 				],
 			},
 		],
@@ -236,33 +284,27 @@ export class LmChatNvidiaTriton implements INodeType {
 
 	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
 		const credentials = await this.getCredentials('nvidiaTritonApi');
-		// Ensure baseUrl is provided by the credential, with a fallback (though credential should enforce it)
 		const tritonBaseUrl = (credentials.baseUrl as string) || 'http://localhost:8000';
 
 		const modelName = this.getNodeParameter('modelName', itemIndex) as string;
+		const inputFieldName = this.getNodeParameter('inputFieldName', itemIndex) as string;
+		const outputFieldName = this.getNodeParameter('outputFieldName', itemIndex) as string;
+
 		const options = this.getNodeParameter('options', itemIndex, {}) as {
 			temperature?: number;
-			stream?: boolean;
-			// max_tokens?: number; // if you add it to properties
 		};
 
-		// Cast 'this' to IExecuteFunctions where n8n utilities expect it.
-		// This is a common pattern in n8n node development when ISupplyDataFunctions
-		// needs to use helpers typically available on IExecuteFunctions.
 		const executeFunctionsThis = this as unknown as IExecuteFunctions;
 
-		const model = new ChatNvidiaTriton({
+		const model = new ChatNvidiaTritonInfer({
 			tritonBaseUrl,
 			modelName,
+			inputFieldName,
+			outputFieldName,
 			temperature: options.temperature,
-			stream: options.stream,
-			// max_tokens: options.max_tokens, // if you add it
 			callbacks: [new N8nLlmTracing(executeFunctionsThis)],
-			// getHttpProxyAgent is used by n8n's internal httpRequest, so we don't pass an agent directly to ChatNvidiaTriton
-			// The proxy configuration is handled globally for n8n's httpRequest.
-			// httpAgent: getHttpProxyAgent(), // Not directly used by the simplified ChatNvidiaTriton
 			onFailedAttempt: makeN8nLlmFailedAttemptHandler(executeFunctionsThis),
-			n8nHttpRequest: executeFunctionsThis.helpers.httpRequest, // Pass the helper directly
+			n8nHttpRequest: executeFunctionsThis.helpers.httpRequest,
 		});
 
 		return {
