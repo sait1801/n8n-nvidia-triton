@@ -10,8 +10,6 @@ import {
 	type NodeApiError,
 } from 'n8n-workflow';
 
-// Assuming these utility paths are correct in your n8n development environment
-import { getHttpProxyAgent } from '@utils/httpProxyAgent';
 import { getConnectionHintNoticeField } from '@utils/sharedFields';
 import { makeN8nLlmFailedAttemptHandler } from '../n8nLlmFailedAttemptHandler'; // Adjust path as needed
 import { N8nLlmTracing } from '../N8nLlmTracing'; // Adjust path as needed
@@ -21,10 +19,13 @@ import {
 	BaseChatModel,
 	type BaseChatModelParams,
 } from '@langchain/core/language_models/chat_models';
-import { AIMessage, BaseMessage } from '@langchain/core/messages';
+import { AIMessage, BaseMessage, type LanguageModelInput } from '@langchain/core/messages';
 import { type ChatResult } from '@langchain/core/outputs';
-import { type CallbackManagerForLLMRun, type Callbacks } from '@langchain/core/callbacks/manager';
-import { v4 as uuidv4 } from 'uuid'; // For generating unique IDs
+import { type CallbackManagerForLLMRun } from '@langchain/core/callbacks/manager';
+import { v4 as uuidv4 } from 'uuid';
+import type { Runnable } from '@langchain/core/runnables';
+import type { StructuredToolInterface } from '@langchain/core/tools';
+import type { ZodObject } from 'zod';
 
 // --- Custom ChatNvidiaTriton LangChain Model (for /infer endpoint) ---
 interface ChatNvidiaTritonParams extends BaseChatModelParams {
@@ -32,10 +33,7 @@ interface ChatNvidiaTritonParams extends BaseChatModelParams {
 	modelName: string;
 	inputFieldName: string;
 	outputFieldName: string;
-	temperature?: number; // Will be passed in 'parameters' if Triton model supports it via /infer
-	// Note: The /infer endpoint is more generic. Passing arbitrary parameters like temperature
-	// depends on the specific model's configuration in Triton and if it accepts them via
-	// the "parameters" field in the request payload. The provided cURL doesn't show it.
+	temperature?: number;
 	n8nHttpRequest: IExecuteFunctions['helpers']['httpRequest'];
 	onFailedAttempt?: (error: Error) => void;
 }
@@ -49,20 +47,51 @@ class ChatNvidiaTriton extends BaseChatModel {
 	private n8nHttpRequest: IExecuteFunctions['helpers']['httpRequest'];
 	private onFailedAttemptHandler?: (error: Error) => void;
 
+	public _isChatModel = true; // Explicitly set
+
 	constructor(fields: ChatNvidiaTritonParams) {
 		super(fields);
 		this.tritonBaseUrl = fields.tritonBaseUrl.replace(/\/+$/, '');
 		this.modelName = fields.modelName;
 		this.inputFieldName = fields.inputFieldName;
 		this.outputFieldName = fields.outputFieldName;
-		this.temperature = fields.temperature; // Store if provided
+		this.temperature = fields.temperature;
 		this.n8nHttpRequest = fields.n8nHttpRequest;
 		this.onFailedAttemptHandler = fields.onFailedAttempt;
-		this.callbacks = fields.callbacks;
+		console.log(
+			'[ChatNvidiaTriton] Instance created. Has bindTools:',
+			typeof this.bindTools === 'function',
+		);
 	}
 
 	_llmType(): string {
 		return 'chat_nvidia_triton_infer';
+	}
+
+	// DRASTICALLY SIMPLIFIED bindTools
+	bindTools(
+		tools: (StructuredToolInterface | Record<string, unknown>)[],
+		kwargs?: Partial<this['ParsedCallOptions']>,
+	): Runnable<LanguageModelInput, AIMessage> {
+		console.log(
+			'[ChatNvidiaTriton] DRASTICALLY SIMPLIFIED bindTools CALLED. Tools:',
+			tools,
+			'kwargs:',
+			kwargs,
+		);
+		// This version bypasses super.bindTools() and returns the current model instance.
+		// This might prevent errors if the agent repeatedly calls bindTools on the returned object,
+		// expecting it to always be a model instance.
+		// WARNING: This means LangChain's default tool processing and binding to options
+		// (which populates options.tools for _generate) is SKIPPED.
+		// For a model that ignores tools anyway, this might be acceptable to avoid crashes.
+
+		// If you wanted to try and manually put tools into lc_kwargs (part of what super.bindTools does):
+		// this.lc_kwargs = { ...this.lc_kwargs, ...kwargs, tools: tools.map(convertToChatTool) };
+		// However, this is risky without understanding all of super.bindTools() internals.
+		// For now, just return 'this'.
+		console.log('[ChatNvidiaTriton] DRASTIC bindTools returning THIS model instance.');
+		return this;
 	}
 
 	async _generate(
@@ -70,6 +99,11 @@ class ChatNvidiaTriton extends BaseChatModel {
 		options: this['ParsedCallOptions'],
 		runManager?: CallbackManagerForLLMRun,
 	): Promise<ChatResult> {
+		// console.log('[ChatNvidiaTriton] _generate called. Options:', options);
+		// Since we bypassed super.bindTools(), options.tools might not be populated here
+		// in the way LangChain agents usually expect.
+		// console.log('[ChatNvidiaTriton] Tools available in options for _generate:', options.tools);
+
 		let promptText = ' ';
 		if (messages.length > 0) {
 			const lastMessage = messages[messages.length - 1];
@@ -83,36 +117,21 @@ class ChatNvidiaTriton extends BaseChatModel {
 			}
 		}
 
-		const requestId = `n8n_${uuidv4()}`; // Generate a unique ID for the request
-
+		const requestId = `n8n_${uuidv4()}`;
 		const payload: JsonObject = {
 			id: requestId,
 			inputs: [
 				{
 					name: this.inputFieldName,
-					shape: [1], // Assuming single string input
-					datatype: 'BYTES', // Standard for text input with vLLM backend
+					shape: [1],
+					datatype: 'BYTES',
 					data: [promptText],
 				},
 			],
-			outputs: [
-				{
-					name: this.outputFieldName,
-					// parameters: { "binary_data_output": false } // Some backends might need this for string output
-				},
-			],
+			outputs: [{ name: this.outputFieldName }],
 		};
-
-		// Add optional parameters if the model supports them (e.g., temperature)
-		// This is model-specific for the /infer endpoint.
-		// The cURL example did not include this, but it's a common LLM parameter.
-		// Check your Triton model's documentation for supported parameters.
 		if (this.temperature !== undefined) {
-			payload.parameters = {
-				// This 'parameters' object is at the root of the payload
-				temperature: this.temperature,
-				// "stream": false, // if your model supports a stream parameter here
-			};
+			payload.parameters = { temperature: this.temperature };
 		}
 
 		const endpoint = `${this.tritonBaseUrl}/v2/models/${this.modelName}/infer`;
@@ -128,13 +147,9 @@ class ChatNvidiaTriton extends BaseChatModel {
 			})) as JsonObject;
 		} catch (error) {
 			const typedError = error as NodeApiError | Error;
-			if (this.onFailedAttemptHandler) {
-				this.onFailedAttemptHandler(typedError);
-			}
+			if (this.onFailedAttemptHandler) this.onFailedAttemptHandler(typedError);
 			const errorMessage =
-				(typedError as NodeApiError).cause?.message ||
-				typedError.message ||
-				'Unknown error during Triton API call';
+				(typedError as NodeApiError).cause?.message || typedError.message || 'Unknown error';
 			const status =
 				(typedError as NodeApiError).cause?.response?.status ||
 				(typedError as NodeApiError).httpCode ||
@@ -146,90 +161,88 @@ class ChatNvidiaTriton extends BaseChatModel {
 
 		if (!responseData.outputs || !Array.isArray(responseData.outputs)) {
 			throw new Error(
-				`Invalid response structure from Triton: 'outputs' array not found. Response: ${JSON.stringify(
-					responseData,
-				)}`,
+				`Invalid response: 'outputs' array not found. Response: ${JSON.stringify(responseData)}`,
 			);
 		}
-
 		const outputObject = responseData.outputs.find((o: any) => o.name === this.outputFieldName);
-
 		if (!outputObject) {
 			throw new Error(
-				`Output field '${this.outputFieldName}' not found in Triton response. Available outputs: ${responseData.outputs
-					.map((o: any) => o.name)
-					.join(', ')}. Response: ${JSON.stringify(responseData)}`,
+				`Output field '${this.outputFieldName}' not found. Available: ${responseData.outputs.map((o: any) => o.name).join(', ')}`,
 			);
 		}
-
-		// Assuming the data is in outputObject.data[0] and is a string
-		// For BYTES datatype, Triton often returns an array of strings.
 		if (!outputObject.data || !Array.isArray(outputObject.data) || outputObject.data.length === 0) {
 			throw new Error(
-				`Data for output field '${this.outputFieldName}' is missing or not an array in Triton response. Output object: ${JSON.stringify(outputObject)}`,
+				`Data for '${this.outputFieldName}' missing/not array. Output: ${JSON.stringify(outputObject)}`,
 			);
 		}
-
 		const textOutput = outputObject.data[0] as string;
-
 		if (typeof textOutput !== 'string') {
 			throw new Error(
-				`Expected string data for output field '${
-					this.outputFieldName
-				}', but received type ${typeof textOutput}. Output data: ${JSON.stringify(outputObject.data)}`,
+				`Expected string data for '${this.outputFieldName}', got ${typeof textOutput}`,
 			);
 		}
 
 		await runManager?.handleLLMNewToken(textOutput);
+		const aiMessage = new AIMessage({ content: textOutput });
 
 		return {
-			generations: [
-				{
-					text: textOutput,
-					message: new AIMessage(textOutput),
-				},
-			],
+			generations: [{ text: textOutput, message: aiMessage }],
 			llmOutput: {
 				model_name: responseData.model_name || this.modelName,
 				model_version: responseData.model_version,
-				id: responseData.id,
+				id: responseData.id || requestId,
 				raw_response: responseData,
 			},
 		};
 	}
+
+	withStructuredOutput<RunOutput extends Record<string, any> = Record<string, any>>(
+		schema: ZodObject<any, any, any, RunOutput> | Record<string, any>,
+		config?: { name?: string; method?: 'functionCalling' | 'jsonMode'; includeRaw?: boolean },
+	): Runnable<LanguageModelInput, RunOutput> {
+		// console.log('[ChatNvidiaTriton] withStructuredOutput called with schema:', schema, 'config:', config);
+		if (config?.method === 'jsonMode') {
+			console.warn('[ChatNvidiaTriton] True JSON mode for withStructuredOutput is not supported.');
+		}
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const llm = this;
+		const runnable = {
+			async invoke(input: LanguageModelInput, options?: Partial<any>): Promise<RunOutput> {
+				const result = await llm.invoke(input, options);
+				if (typeof result.content === 'string') {
+					try {
+						return JSON.parse(result.content) as RunOutput;
+					} catch (e) {
+						return { output: result.content } as unknown as RunOutput;
+					}
+				}
+				return result.content as unknown as RunOutput;
+			},
+		};
+		return runnable as Runnable<LanguageModelInput, RunOutput>;
+	}
 }
-// --- End of Custom ChatNvidiaTriton LangChain Model ---
 
 export class LmChatNvidiaTriton implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Nvidia Triton Model (Infer)',
-		name: 'lmChatNvidiaTriton', // Updated name
+		name: 'lmChatNvidiaTriton', // Ensure this matches the name used in any previous fixes
 		icon: 'file:nvidiaTriton.svg',
 		group: ['transform'],
-		version: 1, // Consider incrementing if this is a major change from a previous version
-		description: 'Uses Nvidia Triton Inference Server /infer endpoint',
-		defaults: {
-			name: 'Nvidia Triton (Infer)',
-		},
+		version: 1.2, // Incrementing version due to significant workaround
+		description: 'Uses Nvidia Triton Inference Server /infer endpoint (with AI Agent workarounds)',
+		defaults: { name: 'Nvidia Triton (Infer)' },
 		codex: {
 			categories: ['AI'],
 			subcategories: {
 				AI: ['Language Models', 'Root Nodes'],
 				'Language Models': ['Chat Models (Recommended)'],
 			},
-			resources: {
-				// primaryDocumentation: [ { url: 'YOUR_TRITON_DOCS_LINK_HERE' } ],
-			},
 		},
 		inputs: [],
 		outputs: [NodeConnectionTypes.AiLanguageModel],
 		outputNames: ['Model'],
-		credentials: [
-			{
-				name: 'nvidiaTritonApi',
-				required: true,
-			},
-		],
+		credentials: [{ name: 'nvidiaTritonApi', required: true }],
 		properties: [
 			getConnectionHintNoticeField([NodeConnectionTypes.AiChain, NodeConnectionTypes.AiAgent]),
 			{
@@ -237,16 +250,15 @@ export class LmChatNvidiaTriton implements INodeType {
 				name: 'modelName',
 				type: 'string',
 				required: true,
-				default: 'vllm_qwen_qwq', // From your new cURL
-				description:
-					'The name of the model deployed on Triton (e.g., "vllm_qwen_qwq" for /v2/models/vllm_qwen_qwq/infer)',
+				default: 'vllm_qwen_qwq',
+				description: 'The name of the model deployed on Triton (e.g., "vllm_qwen_qwq")',
 			},
 			{
 				displayName: 'Input Field Name',
 				name: 'inputFieldName',
 				type: 'string',
 				required: true,
-				default: 'INPUT', // From your new cURL
+				default: 'INPUT',
 				description: 'The "name" of the input tensor in the Triton request payload.',
 			},
 			{
@@ -254,29 +266,24 @@ export class LmChatNvidiaTriton implements INodeType {
 				name: 'outputFieldName',
 				type: 'string',
 				required: true,
-				default: 'OUTPUT', // From your new cURL
+				default: 'OUTPUT',
 				description: 'The "name" of the output tensor to retrieve from the Triton response.',
 			},
 			{
 				displayName: 'Options',
 				name: 'options',
 				placeholder: 'Add Option',
-				description:
-					'Optional parameters for the /infer endpoint. Support depends on the Triton model.',
 				type: 'collection',
 				default: {},
 				options: [
 					{
 						displayName: 'Temperature',
 						name: 'temperature',
-						default: 0.7, // A common default, but your cURL didn't specify it for /infer
+						default: 0.7,
 						typeOptions: { maxValue: 2.0, minValue: 0.0, numberPrecision: 2 },
-						description:
-							'Controls randomness. Note: Support for this parameter via /infer depends on the specific Triton model configuration.',
 						type: 'number',
+						description: 'Controls randomness. Support depends on the Triton model configuration.',
 					},
-					// Add other parameters if your model supports them via the root "parameters" object
-					// in the /infer request.
 				],
 			},
 		],
@@ -285,18 +292,13 @@ export class LmChatNvidiaTriton implements INodeType {
 	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
 		const credentials = await this.getCredentials('nvidiaTritonApi');
 		const tritonBaseUrl = (credentials.baseUrl as string) || 'http://localhost:8000';
-
 		const modelName = this.getNodeParameter('modelName', itemIndex) as string;
 		const inputFieldName = this.getNodeParameter('inputFieldName', itemIndex) as string;
 		const outputFieldName = this.getNodeParameter('outputFieldName', itemIndex) as string;
-
-		const options = this.getNodeParameter('options', itemIndex, {}) as {
-			temperature?: number;
-		};
-
+		const options = this.getNodeParameter('options', itemIndex, {}) as { temperature?: number };
 		const executeFunctionsThis = this as unknown as IExecuteFunctions;
 
-		const model = new ChatNvidiaTriton({
+		const modelInstance = new ChatNvidiaTriton({
 			tritonBaseUrl,
 			modelName,
 			inputFieldName,
@@ -307,8 +309,12 @@ export class LmChatNvidiaTriton implements INodeType {
 			n8nHttpRequest: executeFunctionsThis.helpers.httpRequest,
 		});
 
-		return {
-			response: model,
-		};
+		console.log('[LmChatNvidiaTriton.supplyData] Model instance created:', modelInstance);
+		console.log(
+			'[LmChatNvidiaTriton.supplyData] Model instance has bindTools:',
+			typeof modelInstance.bindTools === 'function',
+		);
+
+		return { response: modelInstance };
 	}
 }
